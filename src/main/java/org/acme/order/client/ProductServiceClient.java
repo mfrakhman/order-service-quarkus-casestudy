@@ -10,7 +10,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
 @RegisterRestClient(configKey = "product-service")
-@Path("/api/skus")
+@Path("/api/products")
 @Consumes(MediaType.APPLICATION_JSON)
 public interface ProductServiceClient {
 

@@ -10,6 +10,7 @@ import org.acme.order.entity.Order;
 import org.acme.order.entity.OrderItem;
 import org.acme.order.entity.OrderStatus;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
+import org.jboss.resteasy.reactive.ClientWebApplicationException;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
@@ -27,6 +28,8 @@ public class OrderService {
      * latency and the DB write — this is the design the k6 baseline measures.
      */
     public Order submit(CreateOrderRequest request) {
+        // The reactive REST client throws for 4xx/5xx even on Response-returning
+        // methods, so the 409 arrives as an exception, not a status code.
         try (Response response = productClient.reserve(new ReserveStockRequest(request.items()))) {
             int status = response.getStatus();
             if (status == 409) {
@@ -35,6 +38,11 @@ public class OrderService {
             if (status != 200) {
                 throw new IllegalStateException("product-service reserve failed: HTTP " + status);
             }
+        } catch (ClientWebApplicationException e) {
+            if (e.getResponse().getStatus() == 409) {
+                throw new InsufficientStockException();
+            }
+            throw e;
         }
         return persistCompleted(request);
     }
