@@ -6,7 +6,7 @@ import java.util.UUID;
 import org.acme.order.dto.CreateOrderRequest;
 import org.acme.order.dto.OrderAcceptedResponse;
 import org.acme.order.entity.Order;
-import org.acme.order.service.InsufficientStockException;
+import org.acme.order.entity.OrderStatus;
 import org.acme.order.service.OrderService;
 
 import io.smallrye.common.annotation.RunOnVirtualThread;
@@ -35,12 +35,12 @@ public class OrderResource {
         if (error != null) {
             return Response.status(400).entity(Map.of("error", error)).build();
         }
-        try {
-            Order order = orderService.submit(request);
-            return Response.status(201).entity(OrderAcceptedResponse.of(order)).build();
-        } catch (InsufficientStockException e) {
-            return Response.status(409).entity(Map.of("error", e.getMessage())).build();
-        }
+        // 201 = durably queued (broker confirmed), not processed — the async
+        // contract. Sellouts surface later as CANCELLED, not as a 409 here.
+        UUID id = orderService.submit(request);
+        return Response.status(201)
+                .entity(new OrderAcceptedResponse(id, OrderStatus.PENDING))
+                .build();
     }
 
     @GET

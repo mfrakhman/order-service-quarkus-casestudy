@@ -3,68 +3,36 @@ package org.acme.order.service;
 import java.time.Instant;
 import java.util.UUID;
 
-import org.acme.order.client.ProductServiceClient;
 import org.acme.order.dto.CreateOrderRequest;
-import org.acme.order.dto.ReserveStockRequest;
 import org.acme.order.entity.Order;
-import org.acme.order.entity.OrderItem;
-import org.acme.order.entity.OrderStatus;
-import org.eclipse.microprofile.rest.client.inject.RestClient;
-import org.jboss.resteasy.reactive.ClientWebApplicationException;
+import org.acme.order.event.OrderCreatedEvent;
+import org.eclipse.microprofile.reactive.messaging.Channel;
+import org.eclipse.microprofile.reactive.messaging.OnOverflow;
 
+import io.smallrye.reactive.messaging.MutinyEmitter;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.transaction.Transactional;
-import jakarta.ws.rs.core.Response;
 
 @ApplicationScoped
 public class OrderService {
 
-    @RestClient
-    ProductServiceClient productClient;
+    // Buffer sized above k6's maxVUs (500): every buffered event belongs to an
+    // intake thread still blocked in sendAndAwait, so nothing here is a hidden
+    // in-memory queue — no 201 leaves before the broker confirms.
+    @Channel("order-created")
+    @OnOverflow(value = OnOverflow.Strategy.BUFFER, bufferSize = 2048)
+    MutinyEmitter<OrderCreatedEvent> orderCreated;
 
     /**
-     * Sync baseline (P1a): block on the product-service reservation, then
-     * write the order. Intake is deliberately coupled to product-service
-     * latency and the DB write — this is the design the k6 baseline measures.
+     * Async intake (v2): validate → publish order.created → await the broker's
+     * publish confirm → 201 {id, PENDING}. Intake never touches Postgres; the
+     * broker is the durable buffer (ARCHITECTURE.md §3.1).
      */
-    public Order submit(CreateOrderRequest request) {
-        // The reactive REST client throws for 4xx/5xx even on Response-returning
-        // methods, so the 409 arrives as an exception, not a status code.
-        try (Response response = productClient.reserve(new ReserveStockRequest(request.items()))) {
-            int status = response.getStatus();
-            if (status == 409) {
-                throw new InsufficientStockException();
-            }
-            if (status != 200) {
-                throw new IllegalStateException("product-service reserve failed: HTTP " + status);
-            }
-        } catch (ClientWebApplicationException e) {
-            if (e.getResponse().getStatus() == 409) {
-                throw new InsufficientStockException();
-            }
-            throw e;
-        }
-        return persistCompleted(request);
-    }
-
-    @Transactional
-    Order persistCompleted(CreateOrderRequest request) {
-        Instant now = Instant.now();
-        Order order = new Order();
-        order.id = UUID.randomUUID();
-        order.status = OrderStatus.COMPLETED;
-        order.createdAt = now;
-        order.completedAt = now;
-
-        for (CreateOrderRequest.Item it : request.items()) {
-            OrderItem item = new OrderItem();
-            item.skuId = it.skuId();
-            item.quantity = it.quantity();
-            item.order = order;
-            order.items.add(item);
-        }
-        order.persist();
-        return order;
+    public UUID submit(CreateOrderRequest request) {
+        UUID id = UUID.randomUUID();
+        Instant createdAt = Instant.now();
+        // virtual thread blocks until the message is acknowledged by RabbitMQ
+        orderCreated.sendAndAwait(OrderCreatedEvent.of(id, request, createdAt));
+        return id;
     }
 
     public Order findWithItems(UUID id) {
