@@ -1,13 +1,9 @@
 package org.acme.order.event;
 
 /**
- * Payload of `stock.reserved` / `stock.rejected` (reason set on rejection only).
- * deferrals counts self-republishes by the status consumer while waiting for
- * the persist consumer to catch up (fan-out race) — null from product-service.
+ * Payload of `stock.reserved` / `stock.rejected` (reason set on rejection
+ * only). No deferrals counter in v3 (ARCHITECTURE.md §7.3) — the row this
+ * reply concerns is guaranteed to already exist, so there's nothing to defer.
  */
-public record StockReplyEvent(String orderId, String reason, Integer deferrals) {
-
-    public int deferralsOrZero() {
-        return deferrals == null ? 0 : deferrals;
-    }
+public record StockReplyEvent(String orderId, String reason) {
 }
